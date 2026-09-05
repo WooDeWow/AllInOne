@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Outputs / uploads / junk
+outputs/
+uploads/
+*.compressed.*
+.tmp/
+tmp/
+temp/
+allinone_outputs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Env / secrets (none required, but ignore habitually)
+.env
+.env.*

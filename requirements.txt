@@ -1,0 +1,6 @@
+# AllInOne — free/local only. No paid APIs.
+gradio>=4.44.0,<6
+Pillow>=10.0.0,<12
+pikepdf>=9.0.0,<10
+pypdf>=5.0.0,<6
+pdf2docx>=0.5.8,<0.6
