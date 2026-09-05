@@ -32,6 +32,8 @@ Thumbs.db
 *.swp
 *~
 
-# Env / secrets (none required, but ignore habitually)
+# Env / secrets / local license config
 .env
 .env.*
+config.json
+license.json

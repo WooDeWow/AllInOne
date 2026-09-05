@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 # Quality-first compression presets
@@ -31,6 +32,15 @@ PDF_PRESETS: dict[str, dict] = {
     },
 }
 
+# Stronger internal steps after named presets (quality-preserving as long as possible)
+PDF_EXTRA_STEPS: list[dict] = [
+    {"label": "stronger (q60 / 1600px)", "jpeg_quality": 60, "max_side": 1600, "recompress_images": True},
+    {"label": "stronger (q50 / 1400px)", "jpeg_quality": 50, "max_side": 1400, "recompress_images": True},
+    {"label": "stronger (q42 / 1200px)", "jpeg_quality": 42, "max_side": 1200, "recompress_images": True},
+    {"label": "stronger (q35 / 1000px)", "jpeg_quality": 35, "max_side": 1000, "recompress_images": True},
+    {"label": "stronger (q28 / 800px)", "jpeg_quality": 28, "max_side": 800, "recompress_images": True},
+]
+
 # UI / status aliases
 PRESET_ALIASES: dict[str, str] = {
     "little": "little",
@@ -42,6 +52,8 @@ PRESET_ALIASES: dict[str, str] = {
     "a lot": "lot",
     "a lot — smaller file": "lot",
 }
+
+PRESET_ORDER = ("little", "medium", "lot")
 
 
 def normalize_preset(preset: str | None) -> str:
@@ -102,21 +114,72 @@ def _level_to_preset(level: int) -> str:
     return "lot"
 
 
+def _build_aggressiveness_ladder(start_preset: str) -> list[dict]:
+    """Named presets from start upward, then stronger internal steps."""
+    start = normalize_preset(start_preset)
+    try:
+        idx = PRESET_ORDER.index(start)
+    except ValueError:
+        idx = 0
+    steps: list[dict] = []
+    for key in PRESET_ORDER[idx:]:
+        cfg = dict(PDF_PRESETS[key])
+        cfg["step_key"] = key
+        steps.append(cfg)
+    for i, extra in enumerate(PDF_EXTRA_STEPS):
+        cfg = dict(extra)
+        cfg["step_key"] = f"extra_{i}"
+        steps.append(cfg)
+    return steps
+
+
+@dataclass
+class CompressResult:
+    path: Path
+    before_bytes: int
+    after_bytes: int
+    target_bytes: int | None
+    started_preset: str
+    final_step_label: str
+    target_met: bool | None  # None if no target set
+    best_effort: bool
+
+
 def compress_pdf(
     input_path: str | Path,
     output_path: str | Path,
     preset: str = "little",
     level: int | None = None,
+    max_bytes: int | None = None,
 ) -> Path:
     """
     Compress PDF with pikepdf (stream compression + optional image re-encode).
 
     preset: "little" | "medium" | "lot" (quality-first; default little).
-    level: optional legacy 1–10; used only when preset is omitted/invalid
-           and you want numeric mapping (kept for internal compatibility).
+    level: optional legacy 1–10.
+    max_bytes: optional size cap — steps up aggressiveness until under target
+               (or best effort). Never writes an output larger than the input
+               if a smaller rewrite exists.
     Falls back to pypdf rewrite if pikepdf fails.
-    Never writes an output larger than the input (copies original instead).
     """
+    result = compress_pdf_detailed(
+        input_path,
+        output_path,
+        preset=preset,
+        level=level,
+        max_bytes=max_bytes,
+    )
+    return result.path
+
+
+def compress_pdf_detailed(
+    input_path: str | Path,
+    output_path: str | Path,
+    preset: str = "little",
+    level: int | None = None,
+    max_bytes: int | None = None,
+) -> CompressResult:
+    """Like compress_pdf but returns size/target metadata for UI status."""
     input_path = Path(input_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,39 +189,114 @@ def compress_pdf(
         or str(preset).strip() == ""
         or str(preset).strip().isdigit()
     ):
-        key = _level_to_preset(int(level))
+        start_key = _level_to_preset(int(level))
     else:
-        key = normalize_preset(preset)
+        start_key = normalize_preset(preset)
 
-    cfg = PDF_PRESETS[key]
+    before = input_path.stat().st_size
+    target = int(max_bytes) if max_bytes and max_bytes > 0 else None
 
-    try:
-        result = _compress_pikepdf(
-            input_path,
-            output_path,
-            jpeg_quality=int(cfg["jpeg_quality"]),
-            max_side=cfg["max_side"],
-            recompress_images=bool(cfg["recompress_images"]),
-        )
-    except Exception as pike_err:
-        try:
-            result = _compress_pypdf(input_path, output_path)
-        except Exception as pypdf_err:
-            raise RuntimeError(
-                f"PDF compression failed.\npikepdf: {pike_err}\npypdf: {pypdf_err}"
-            ) from pypdf_err
+    # Effective target never asks for larger than input (we always prefer ≤ input)
+    effective_target = target
+    if effective_target is not None:
+        effective_target = min(effective_target, before)
 
-    # Never make the file bigger — keep the original if compression grew it
-    try:
-        in_size = input_path.stat().st_size
-        out_size = Path(result).stat().st_size
-        if out_size > in_size:
+    ladder = _build_aggressiveness_ladder(start_key)
+    best_path: Path | None = None
+    best_size = before + 1
+    best_label = PDF_PRESETS[start_key]["label"]
+    target_met = False if effective_target is not None else None
+
+    with tempfile.TemporaryDirectory(prefix="allinone_pdf_") as tmp:
+        tmp_dir = Path(tmp)
+        for step_i, cfg in enumerate(ladder):
+            candidate = tmp_dir / f"step_{step_i}.pdf"
+            try:
+                result = _compress_pikepdf(
+                    input_path,
+                    candidate,
+                    jpeg_quality=int(cfg["jpeg_quality"]),
+                    max_side=cfg["max_side"],
+                    recompress_images=bool(cfg["recompress_images"]),
+                )
+            except Exception as pike_err:
+                if step_i == 0:
+                    # First step: allow pypdf fallback once
+                    try:
+                        result = _compress_pypdf(input_path, candidate)
+                    except Exception as pypdf_err:
+                        raise RuntimeError(
+                            f"PDF compression failed.\npikepdf: {pike_err}\npypdf: {pypdf_err}"
+                        ) from pypdf_err
+                else:
+                    continue
+
+            try:
+                size = Path(result).stat().st_size
+            except OSError:
+                continue
+
+            # Track best (smallest) rewrite that is ≤ input
+            if size <= before and size < best_size:
+                best_size = size
+                best_label = str(cfg.get("label") or cfg.get("step_key"))
+                # Copy into a stable best slot
+                best_slot = tmp_dir / "best.pdf"
+                shutil.copy2(result, best_slot)
+                best_path = best_slot
+
+            if effective_target is not None and size <= effective_target:
+                # Prefer this if ≤ target (and preferably ≤ input)
+                if size <= before:
+                    shutil.copy2(result, output_path)
+                    return CompressResult(
+                        path=Path(output_path),
+                        before_bytes=before,
+                        after_bytes=size,
+                        target_bytes=target,
+                        started_preset=start_key,
+                        final_step_label=str(cfg.get("label") or cfg.get("step_key")),
+                        target_met=True,
+                        best_effort=False,
+                    )
+                # Over input but under target — still keep looking for ≤ input
+                target_met = True
+
+            # If no size target, stop after the user's starting preset (first step)
+            if effective_target is None:
+                break
+
+            # Meaningful shrink stall: if we already have ≤ target, done above;
+            # if last few steps barely help, ladder will exhaust naturally.
+
+        # Decide final output
+        if best_path is not None and best_size <= before:
+            shutil.copy2(best_path, output_path)
+            after = best_size
+            final_label = best_label
+        else:
+            # No smaller rewrite — keep original (never enlarge)
             shutil.copy2(input_path, output_path)
-            return Path(output_path)
-    except OSError:
-        pass
+            after = before
+            final_label = PDF_PRESETS[start_key]["label"] + " (original kept)"
 
-    return Path(result)
+        if effective_target is not None:
+            target_met = after <= effective_target
+            best_effort = not target_met
+        else:
+            target_met = None
+            best_effort = False
+
+        return CompressResult(
+            path=Path(output_path),
+            before_bytes=before,
+            after_bytes=after,
+            target_bytes=target,
+            started_preset=start_key,
+            final_step_label=final_label,
+            target_met=target_met,
+            best_effort=best_effort,
+        )
 
 
 def _compress_pikepdf(

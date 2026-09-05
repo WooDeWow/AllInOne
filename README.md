@@ -1,17 +1,27 @@
-# AllInOne — Free File Compressor & Converter
+# AllInOne — File Compressor & Converter
 
-Local web app to **compress PDFs & images**, **convert image formats**, and **convert PDF ↔ Word**.  
-Runs **100% offline** after `pip install`. No accounts, no API keys, no cloud services.
+**Compress · Convert · Stay local**
+
+Desktop web app to **compress PDFs & images to a max size**, **convert image formats**, and **convert PDF ↔ Word**.  
+Runs on your machine after `pip install`. Optional indie license gate for sellers (Google Sheets + Apps Script).
 
 ## Features
 
-| Feature | How |
-|--------|-----|
-| Compress PDF | `pikepdf` (+ `pypdf` fallback) — **A little / Medium / A lot** (quality first) |
-| Compress images | Pillow — same little / medium / lot presets |
+| Feature | Details |
+|--------|---------|
+| Compress PDF | Quality presets (**A little / Medium / A lot**) + **max size** target (5–100 MB, default **25 MB**) |
+| Compress images | Same presets + max size target |
 | Convert images | jpg, png, webp, gif, bmp, tiff, ico |
 | PDF → Word | `pdf2docx` → `.docx` |
 | Word → PDF | LibreOffice headless (`soffice`) |
+| License | Trial then key activation (see below) |
+
+### Max file size (PDF & images)
+
+1. Starts from your quality preset (preserves quality as long as possible).
+2. If still over the target, steps up aggressiveness (medium → lot → stronger internal JPEG / resize steps).
+3. Never returns a file larger than the input when a smaller rewrite exists.
+4. Status shows before / after / target / starting preset / whether the target was met (or a clear best-effort message).
 
 ## Install
 
@@ -36,27 +46,48 @@ python app.py
 
 Open **http://127.0.0.1:7860** in your browser.
 
+### Dev unlock (builders only)
+
+```bash
+export ALLINONE_DEV_UNLOCK=1   # bypass license gate while developing — not for production
+python app.py
+```
+
+## License & trial (customers)
+
+- **Trial:** full features for **7 days from first run** or **10 uses** (whichever comes first).
+- Then Compress / Convert lock until you activate a key on the **License** tab.
+- Licensed installs re-check about every **24 hours** when online; **7-day offline grace** after a successful check.
+- Keys are stored in `~/.allinone/license.json` (survives git pulls).
+
+## For sellers
+
+See **[LICENSE_SETUP.md](LICENSE_SETUP.md)** — use your private Google Sheet + Apps Script Web App as the license database.
+
+1. Copy `config.example.json` → `config.json`.
+2. Deploy the Apps Script from the setup doc (bound to sheet ID `1-ucqexWNSVjXSivPqnosI2BNRSaIjwndVj8dVIFnmS0`).
+3. Put the **Web App** URL in `config.json` as `license_url` (never the spreadsheet `/edit` link).
+4. Issue keys by adding rows; revoke by setting Status to `revoked`.
+
+```bash
+cp config.example.json config.json
+# edit license_url
+```
+
+Or: `export ALLINONE_LICENSE_URL='https://script.google.com/macros/s/.../exec'`
+
 ## LibreOffice (optional — only for Word → PDF)
 
-Other features work without it. If `soffice` is missing, the UI shows install tips instead of crashing.
+Other features work without it. If `soffice` is missing, the UI shows install tips.
 
-- **Linux:** `sudo apt install libreoffice` (or your distro equivalent)
+- **Linux:** `sudo apt install libreoffice`
 - **macOS:** `brew install --cask libreoffice` or [libreoffice.org](https://www.libreoffice.org/download/)
-- **Windows:** install from [libreoffice.org](https://www.libreoffice.org/download/), then ensure  
-  `C:\Program Files\LibreOffice\program` is on your PATH (so `soffice` is found)
-
-## Usage tips
-
-- **Compress PDF:** choose **A little** (best quality, recommended), **Medium**, or **A lot**. Shrinks by cleaning structure and optionally recompressing images; quality is prioritized. Status shows before/after size and the preset used.
-- **Compress images:** same little / medium / lot presets (quality-first).
-- **Image Convert:** pick a target format (e.g. PNG → WebP).
-- **PDF → Word:** layout fidelity varies on complex PDFs (tables, multi-column).
-- **Word → PDF:** needs LibreOffice once; then fully offline.
+- **Windows:** install from [libreoffice.org](https://www.libreoffice.org/download/), ensure `soffice` is on PATH
 
 ## Privacy
 
-Everything stays on your machine. No telemetry.
+Compression and conversion stay on your machine. The only network call (when configured) is a license key check to **your** Apps Script endpoint. Gradio analytics are disabled.
 
-## License
+## Requirements
 
-Use freely. Dependencies are open-source packages under their own licenses.
+See `requirements.txt` (Gradio, Pillow, pikepdf, pypdf, pdf2docx).

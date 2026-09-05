@@ -1,0 +1,6 @@
+{
+  "license_url": "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec",
+  "product_name": "AllInOne",
+  "license_sheet_id": "1-ucqexWNSVjXSivPqnosI2BNRSaIjwndVj8dVIFnmS0",
+  "_comment": "Copy to config.json. Set license_url to your Apps Script Web App URL only — NEVER the Google Sheet /edit link. See LICENSE_SETUP.md."
+}

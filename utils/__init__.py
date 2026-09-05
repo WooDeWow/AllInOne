@@ -1,9 +1,10 @@
 """Utility helpers for AllInOne file compressor & converter."""
 
 from .common import format_size, file_size
-from .images import compress_image, convert_image
+from .images import compress_image, compress_image_to_target, convert_image
 from .pdf_tools import (
     compress_pdf,
+    compress_pdf_detailed,
     pdf_to_docx,
     docx_to_pdf,
     find_soffice,
@@ -16,8 +17,10 @@ __all__ = [
     "format_size",
     "file_size",
     "compress_image",
+    "compress_image_to_target",
     "convert_image",
     "compress_pdf",
+    "compress_pdf_detailed",
     "pdf_to_docx",
     "docx_to_pdf",
     "find_soffice",
