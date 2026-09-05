@@ -20,11 +20,36 @@ import gradio as gr
 
 from utils.common import file_size, format_size, size_summary
 from utils.images import compress_image, convert_image
-from utils.pdf_tools import compress_pdf, docx_to_pdf, find_soffice, pdf_to_docx
+from utils.pdf_tools import (
+    compress_pdf,
+    docx_to_pdf,
+    find_soffice,
+    normalize_preset,
+    pdf_to_docx,
+    preset_label,
+)
 
 APP_TITLE = "AllInOne — Free File Compressor & Converter"
 OUTPUT_ROOT = Path(tempfile.gettempdir()) / "allinone_outputs"
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+PDF_PRESET_CHOICES = [
+    "A little — best quality (recommended)",
+    "Medium — balanced",
+    "A lot — smaller file",
+]
+
+# Image compress: same spirit little/medium/lot → quality (+ optional mild resize)
+IMAGE_PRESET_CHOICES = [
+    "A little — best quality (recommended)",
+    "Medium — balanced",
+    "A lot — smaller file",
+]
+IMAGE_PRESET_MAP = {
+    "A little — best quality (recommended)": {"quality": 90, "max_dim": 0},
+    "Medium — balanced": {"quality": 78, "max_dim": 0},
+    "A lot — smaller file": {"quality": 65, "max_dim": 2000},
+}
 
 
 def _safe_name(upload_path: str | Path, default_stem: str, suffix: str) -> Path:
@@ -52,34 +77,45 @@ def _err(msg: str) -> tuple:
 # Tab handlers
 # ---------------------------------------------------------------------------
 
-def handle_compress_pdf(file, level):
+def handle_compress_pdf(file, preset_choice):
     if file is None:
         return _err("Please upload a PDF file.")
     try:
         src = Path(file if isinstance(file, str) else file.name)
         if src.suffix.lower() != ".pdf":
             return _err("Please upload a .pdf file.")
+        preset = normalize_preset(preset_choice)
         before = file_size(src)
         out = _safe_name(src, "compressed", ".pdf")
-        compress_pdf(src, out, level=int(level))
+        compress_pdf(src, out, preset=preset)
         after = file_size(out)
+        label = preset_label(preset)
+        note = ""
+        if after >= before:
+            note = "\n(No size win — original kept so the file is never made larger.)"
         info = (
             f"✅ PDF compressed successfully.\n"
             f"{size_summary(before, after)}\n"
-            f"Compression level: {int(level)}/10"
+            f"Preset: {label}{note}"
         )
         return str(out), info
     except Exception as e:
         return _err(f"❌ PDF compression failed:\n{e}")
 
 
-def handle_compress_image(file, quality, max_dim, keep_format):
+def handle_compress_image(file, preset_choice, keep_format):
     if file is None:
         return _err("Please upload an image file.")
     try:
         src = Path(file if isinstance(file, str) else file.name)
         before = file_size(src)
-        max_dimension = int(max_dim) if max_dim and int(max_dim) > 0 else None
+
+        cfg = IMAGE_PRESET_MAP.get(
+            preset_choice,
+            IMAGE_PRESET_MAP[IMAGE_PRESET_CHOICES[0]],
+        )
+        quality = int(cfg["quality"])
+        max_dimension = int(cfg["max_dim"]) if cfg["max_dim"] else None
 
         if keep_format:
             ext = src.suffix.lower() or ".jpg"
@@ -90,13 +126,25 @@ def handle_compress_image(file, quality, max_dim, keep_format):
             # Default compressed output to JPEG for max size savings
             out = _safe_name(src, "compressed", ".jpg")
 
-        compress_image(src, out, quality=int(quality), max_dimension=max_dimension)
+        compress_image(src, out, quality=quality, max_dimension=max_dimension)
         after = file_size(out)
+
+        # Map choice to short label for status
+        short = {
+            IMAGE_PRESET_CHOICES[0]: "A little (best quality)",
+            IMAGE_PRESET_CHOICES[1]: "Medium (balanced)",
+            IMAGE_PRESET_CHOICES[2]: "A lot (smaller file)",
+        }.get(preset_choice, "A little (best quality)")
+
         info = (
             f"✅ Image compressed successfully.\n"
             f"{size_summary(before, after)}\n"
-            f"Quality: {int(quality)}"
-            + (f" · Max dimension: {max_dimension}px" if max_dimension else " · Original dimensions kept")
+            f"Preset: {short} · Quality: {quality}"
+            + (
+                f" · Max dimension: {max_dimension}px"
+                if max_dimension
+                else " · Original dimensions kept"
+            )
         )
         return str(out), info
     except Exception as e:
@@ -215,39 +263,42 @@ def build_ui() -> gr.Blocks:
             # ---- Compress ----
             with gr.Tab("Compress"):
                 with gr.Tab("PDF"):
-                    gr.Markdown("Reduce PDF file size (structure + optional image recompression).")
+                    gr.Markdown(
+                        "### PDF compression — quality first\n"
+                        "PDFs shrink by cleaning structure (streams / object packing) and, "
+                        "for stronger presets, optionally recompressing embedded images. "
+                        "**Quality is prioritized** — choose how much size you need to trade. "
+                        "If compression would make the file larger, the original is kept."
+                    )
                     pdf_in = gr.File(label="Upload PDF", file_types=[".pdf"])
-                    pdf_level = gr.Slider(
-                        1, 10, value=5, step=1,
-                        label="Compression level (higher = smaller, may reduce image quality)",
+                    pdf_preset = gr.Radio(
+                        choices=PDF_PRESET_CHOICES,
+                        value=PDF_PRESET_CHOICES[0],
+                        label="How much to compress?",
                     )
                     pdf_btn = gr.Button("Compress PDF", variant="primary")
                     pdf_out = gr.File(label="Download compressed PDF")
-                    pdf_info = gr.Textbox(label="Status", lines=4)
+                    pdf_info = gr.Textbox(label="Status", lines=5)
 
                     pdf_btn.click(
                         handle_compress_pdf,
-                        inputs=[pdf_in, pdf_level],
+                        inputs=[pdf_in, pdf_preset],
                         outputs=[pdf_out, pdf_info],
                     )
 
                 with gr.Tab("Image"):
                     gr.Markdown(
                         "Compress JPEG, PNG, WebP, and other common image formats. "
-                        "Uses Pillow — quality slider controls re-encode strength."
+                        "Presets favor quality; pick **A lot** only when you need a smaller file."
                     )
                     img_in = gr.File(
                         label="Upload image",
                         file_types=[".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".ico"],
                     )
-                    img_quality = gr.Slider(
-                        10, 95, value=75, step=1,
-                        label="Quality (higher = better looking / larger file)",
-                    )
-                    img_max_dim = gr.Number(
-                        value=0,
-                        label="Max dimension in px (0 = keep original size)",
-                        precision=0,
+                    img_preset = gr.Radio(
+                        choices=IMAGE_PRESET_CHOICES,
+                        value=IMAGE_PRESET_CHOICES[0],
+                        label="How much to compress?",
                     )
                     img_keep = gr.Checkbox(
                         value=True,
@@ -259,7 +310,7 @@ def build_ui() -> gr.Blocks:
 
                     img_btn.click(
                         handle_compress_image,
-                        inputs=[img_in, img_quality, img_max_dim, img_keep],
+                        inputs=[img_in, img_preset, img_keep],
                         outputs=[img_out, img_info],
                     )
 

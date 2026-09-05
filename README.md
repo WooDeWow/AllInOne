@@ -7,8 +7,8 @@ Runs **100% offline** after `pip install`. No accounts, no API keys, no cloud se
 
 | Feature | How |
 |--------|-----|
-| Compress PDF | `pikepdf` (+ `pypdf` fallback) |
-| Compress images | Pillow (JPEG/PNG/WebP/…) |
+| Compress PDF | `pikepdf` (+ `pypdf` fallback) — **A little / Medium / A lot** (quality first) |
+| Compress images | Pillow — same little / medium / lot presets |
 | Convert images | jpg, png, webp, gif, bmp, tiff, ico |
 | PDF → Word | `pdf2docx` → `.docx` |
 | Word → PDF | LibreOffice headless (`soffice`) |
@@ -47,7 +47,8 @@ Other features work without it. If `soffice` is missing, the UI shows install ti
 
 ## Usage tips
 
-- **Compress:** upload → set quality / level → download. Status shows before/after sizes.
+- **Compress PDF:** choose **A little** (best quality, recommended), **Medium**, or **A lot**. Shrinks by cleaning structure and optionally recompressing images; quality is prioritized. Status shows before/after size and the preset used.
+- **Compress images:** same little / medium / lot presets (quality-first).
 - **Image Convert:** pick a target format (e.g. PNG → WebP).
 - **PDF → Word:** layout fidelity varies on complex PDFs (tables, multi-column).
 - **Word → PDF:** needs LibreOffice once; then fully offline.

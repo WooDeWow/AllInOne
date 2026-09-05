@@ -9,6 +9,64 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# Quality-first compression presets
+PDF_PRESETS: dict[str, dict] = {
+    "little": {
+        "label": "A little (best quality)",
+        "jpeg_quality": 91,
+        "max_side": None,
+        "recompress_images": False,  # structure / stream cleanup only
+    },
+    "medium": {
+        "label": "Medium (balanced)",
+        "jpeg_quality": 84,
+        "max_side": 3200,  # only shrink truly huge images
+        "recompress_images": True,
+    },
+    "lot": {
+        "label": "A lot (smaller file)",
+        "jpeg_quality": 70,
+        "max_side": 2000,
+        "recompress_images": True,
+    },
+}
+
+# UI / status aliases
+PRESET_ALIASES: dict[str, str] = {
+    "little": "little",
+    "a little": "little",
+    "a little — best quality (recommended)": "little",
+    "medium": "medium",
+    "medium — balanced": "medium",
+    "lot": "lot",
+    "a lot": "lot",
+    "a lot — smaller file": "lot",
+}
+
+
+def normalize_preset(preset: str | None) -> str:
+    """Map UI label or short key to little|medium|lot."""
+    if not preset:
+        return "little"
+    key = str(preset).strip().lower()
+    # Exact alias
+    if key in PRESET_ALIASES:
+        return PRESET_ALIASES[key]
+    # Prefix / contains
+    if key.startswith("a little") or key == "little":
+        return "little"
+    if key.startswith("medium"):
+        return "medium"
+    if key.startswith("a lot") or key == "lot":
+        return "lot"
+    return "little"
+
+
+def preset_label(preset: str | None) -> str:
+    """Human-readable preset name for status text."""
+    key = normalize_preset(preset)
+    return PDF_PRESETS[key]["label"]
+
 
 def find_soffice() -> str | None:
     """Locate LibreOffice / OpenOffice soffice binary if installed."""
@@ -34,45 +92,83 @@ def find_soffice() -> str | None:
     return None
 
 
+def _level_to_preset(level: int) -> str:
+    """Internal mapping if a numeric level is still passed."""
+    level = max(1, min(10, int(level)))
+    if level <= 3:
+        return "little"
+    if level <= 6:
+        return "medium"
+    return "lot"
+
+
 def compress_pdf(
     input_path: str | Path,
     output_path: str | Path,
-    level: int = 5,
+    preset: str = "little",
+    level: int | None = None,
 ) -> Path:
     """
     Compress PDF with pikepdf (stream compression + optional image re-encode).
-    level: 1–10 (higher = smaller / more aggressive image recompression).
+
+    preset: "little" | "medium" | "lot" (quality-first; default little).
+    level: optional legacy 1–10; used only when preset is omitted/invalid
+           and you want numeric mapping (kept for internal compatibility).
     Falls back to pypdf rewrite if pikepdf fails.
+    Never writes an output larger than the input (copies original instead).
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    level = max(1, min(10, int(level)))
+
+    if level is not None and (
+        preset is None
+        or str(preset).strip() == ""
+        or str(preset).strip().isdigit()
+    ):
+        key = _level_to_preset(int(level))
+    else:
+        key = normalize_preset(preset)
+
+    cfg = PDF_PRESETS[key]
 
     try:
-        return _compress_pikepdf(input_path, output_path, level)
+        result = _compress_pikepdf(
+            input_path,
+            output_path,
+            jpeg_quality=int(cfg["jpeg_quality"]),
+            max_side=cfg["max_side"],
+            recompress_images=bool(cfg["recompress_images"]),
+        )
     except Exception as pike_err:
         try:
-            return _compress_pypdf(input_path, output_path)
+            result = _compress_pypdf(input_path, output_path)
         except Exception as pypdf_err:
             raise RuntimeError(
                 f"PDF compression failed.\npikepdf: {pike_err}\npypdf: {pypdf_err}"
             ) from pypdf_err
 
+    # Never make the file bigger — keep the original if compression grew it
+    try:
+        in_size = input_path.stat().st_size
+        out_size = Path(result).stat().st_size
+        if out_size > in_size:
+            shutil.copy2(input_path, output_path)
+            return Path(output_path)
+    except OSError:
+        pass
 
-def _compress_pikepdf(input_path: Path, output_path: Path, level: int) -> Path:
+    return Path(result)
+
+
+def _compress_pikepdf(
+    input_path: Path,
+    output_path: Path,
+    jpeg_quality: int,
+    max_side: int | None,
+    recompress_images: bool,
+) -> Path:
     import pikepdf
-    from PIL import Image
-
-    # Higher level → lower JPEG quality / smaller max dimension
-    jpeg_quality = max(28, 92 - (level * 6))  # ~86 … 32
-    max_side = None
-    if level >= 8:
-        max_side = 1500
-    elif level >= 6:
-        max_side = 2000
-    elif level >= 4:
-        max_side = 2800
 
     with pikepdf.open(input_path) as pdf:
         try:
@@ -80,8 +176,13 @@ def _compress_pikepdf(input_path: Path, output_path: Path, level: int) -> Path:
         except Exception:
             pass
 
-        if level >= 3:
-            _recompress_page_images(pdf, jpeg_quality=jpeg_quality, max_side=max_side)
+        if recompress_images:
+            _recompress_page_images(
+                pdf,
+                jpeg_quality=jpeg_quality,
+                max_side=max_side,
+                only_if_smaller=True,
+            )
 
         pdf.save(
             output_path,
@@ -90,14 +191,17 @@ def _compress_pikepdf(input_path: Path, output_path: Path, level: int) -> Path:
             recompress_flate=True,
         )
 
-    # If somehow larger, keep the smaller of original rewrite-only vs result
-    # (caller still shows sizes; we just ensure we wrote a valid file)
     if not output_path.is_file():
         raise RuntimeError("pikepdf did not write an output file.")
     return output_path
 
 
-def _recompress_page_images(pdf, jpeg_quality: int, max_side: int | None) -> None:
+def _recompress_page_images(
+    pdf,
+    jpeg_quality: int,
+    max_side: int | None,
+    only_if_smaller: bool = True,
+) -> None:
     """Best-effort re-encode of embedded images (skip on failure)."""
     import pikepdf
     from PIL import Image
@@ -115,6 +219,15 @@ def _recompress_page_images(pdf, jpeg_quality: int, max_side: int | None) -> Non
                     continue
 
                 try:
+                    # Approximate original stream size when available
+                    try:
+                        orig_len = len(raw.read_bytes())
+                    except Exception:
+                        try:
+                            orig_len = len(raw.get_stream_buffer())
+                        except Exception:
+                            orig_len = None
+
                     w, h = pil.size
                     if max_side and max(w, h) > max_side:
                         pil = pil.copy()
@@ -126,7 +239,6 @@ def _recompress_page_images(pdf, jpeg_quality: int, max_side: int | None) -> Non
                         pil.save(buf, format="PNG", optimize=True)
                         fmt = "png"
                     elif pil.mode == "P":
-                        # Palette: convert carefully
                         if "transparency" in pil.info:
                             pil = pil.convert("RGBA")
                             pil.save(buf, format="PNG", optimize=True)
@@ -151,8 +263,12 @@ def _recompress_page_images(pdf, jpeg_quality: int, max_side: int | None) -> Non
                         )
                         fmt = "jpeg"
 
+                    data = buf.getvalue()
+                    if only_if_smaller and orig_len is not None and len(data) >= orig_len:
+                        # Re-encode would not shrink this image — keep original
+                        continue
+
                     buf.seek(0)
-                    # pikepdf PdfImage.replace accepts a file-like + pillow format hint
                     try:
                         pdfimage.replace(buf, pillow_image=Image.open(buf))
                     except TypeError:
