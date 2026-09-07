@@ -606,7 +606,7 @@ def main():
         server_name="127.0.0.1",
         server_port=port,
         share=False,
-        inbrowser=False,
+        inbrowser=True,
     )
 
 
